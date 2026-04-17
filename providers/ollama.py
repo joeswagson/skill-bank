@@ -33,7 +33,7 @@ class OllamaProvider(LLMProvider):
             **kwargs: Additional options passed to parent class
         """
         # Ollama doesn't require API key by default
-        super().__init__(api_key=None, base_url=base_url, timeout=timeout, **kwargs)
+        super().__init__(base_url=base_url, timeout=timeout, **kwargs)
 
         self._default_model = model or self.DEFAULT_MODEL
         self._keep_alive = keep_alive
