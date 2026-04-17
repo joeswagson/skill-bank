@@ -37,9 +37,6 @@ class OpenAIProvider(LLMProvider):
         """
         super().__init__(api_key=api_key, base_url=base_url, timeout=timeout, **kwargs)
 
-        if not self.api_key:
-            raise ValueError("API key is required for OpenAIProvider")
-
         self._default_model = model or self.DEFAULT_MODEL
         self._organization = organization
 
