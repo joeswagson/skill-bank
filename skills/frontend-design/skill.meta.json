@@ -1,5 +1,34 @@
 {
-    "files": [
-        "SKILL.md"
-    ]
+  "keywords": [],
+  "files": [
+    "SKILL.md"
+  ],
+
+  "variables": {
+    "FONT_DISPLAY": "Oxanium",
+    "FONT_BODY": "Inter",
+    "FONT_MONO": "JetBrains Mono",
+    "THEME_MODE": "dark",
+    "FONT_SOURCE_DISPLAY": "https://fonts.googleapis.com/css2?family=Oxanium:wght@300;400;600;800&display=swap",
+    "FONT_SOURCE_BODY": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap",
+    "FONT_SOURCE_MONO": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap",
+    "ACCENT_COLOR": "#00e5ff",
+    "ACCENT_ALT": "#ff4fd8",
+    "BACKGROUND": "#0a0a0f",
+    "SURFACE": "#13131a",
+    "SURFACE_ALT": "#1c1c28",
+    "TEXT_PRIMARY": "#e8e8f0",
+    "TEXT_MUTED": "#6b6b88",
+    "BORDER_COLOR": "#2a2a3d",
+    "ERROR_COLOR": "#ff4444",
+    "SUCCESS_COLOR": "#00e5a0",
+    "AESTHETIC": "dark-terminal",
+    "RADIUS": "4px",
+    "MOTION_LEVEL": "subtle",
+    "DENSITY": "comfortable",
+    "SHADOW_STYLE": "glow",
+    "FRAMEWORK": "react",
+    "CSS_APPROACH": "inline-styles",
+    "ANIMATION_LIB": "css-only"
+  }
 }
