@@ -1,2 +1,5 @@
 # ill probably make a schema for this but i have sensitive info in here
 config.json
+
+.venv/*
+.idea/*
