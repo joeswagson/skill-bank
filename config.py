@@ -69,6 +69,18 @@ def _update_from_dict(config_obj, data: Dict[str, Any]) -> None:
             setattr(config_obj, f.name, value)
 
 
+@dataclass
+class MCPConfig:
+    transport:str = field(default="stdio")
+    host:str = field(default="127.0.0.1")
+    port:int = field(default=8000)
+
+    # will search the library for new skills whenever skills are listed
+    # configurable because a large library might add latency if not necessary.
+    list_rediscovery:bool = field(default=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 @dataclass
 class Config:
