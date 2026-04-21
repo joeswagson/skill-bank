@@ -154,6 +154,8 @@ def update_skill_metadata(skill: Skill) -> None:
     for f in skill.files:
         f.subject, f.level = analyze_subject_and_level(f)
 
+    skill.save_meta()
+
 
 __all__ = [
     "generate_keywords",
