@@ -141,6 +141,10 @@ def load_provider(name: str):
     kwargs = get_provider_kwargs(name)
     return providers.get_provider(name, **kwargs)
 
+def load_primary_provider():
+    cfg = get_config()
+    return load_provider(cfg.providers.primary)
+
 
 # if __name__ == "__main__":
 #     import pprint
