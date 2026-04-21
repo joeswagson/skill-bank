@@ -34,7 +34,7 @@ async def run_test(provider: LLMProvider, message: ChatMessage):
     header = f"[{name}]"
     print(f"{header} Generating response...")
 
-    response = await provider.chat(messages=[message])
+    response = await provider.send_message(message) #await provider.chat(messages=[message])
 
     print(f"{header} ✓ (Model: {response.model})")
     print(f"{' ' * len(header)} Preview: {response.content[:100]}...")
