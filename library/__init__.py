@@ -11,7 +11,7 @@ Usage:
     frontend = lib.get("frontend-design")
     print(frontend.content())  # Variable-substituted content
 """
-from .skill import Skill, SkillFile, Library, SKILL_ENTRY, META_ENTRY
+from .skill_library import Skill, SkillFile, Library, SKILL_ENTRY, META_ENTRY
 
 __all__ = [
     "Skill",
