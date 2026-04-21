@@ -4,383 +4,338 @@ Skill parsing and library management.
 
 import json
 import re
+from dataclasses import dataclass, field
+from enum import nonmember
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
+from unittest import skip
 
-# Default skill template content
-SKILL_TEMPLATE = """---
-Title: {{SKILL_NAME}}
-Description: {{SKILL_DESCRIPTION}}
-Tags: {{SKILL_TAGS}}
----
+SKILL_ENTRY = "SKILL.md"
+META_ENTRY  = "skill.meta.json"
 
-# {{SKILL_NAME}} Skill
+VAR_PATTERN = re.compile(r"\{\{(\w+)}}")
 
-## Overview
-{{SKILL_OVERVIEW}}
 
-## Capabilities
-{{SKILL_CAPABILITIES}}
-
-## Guidelines
-{{SKILL_GUIDELINES}}
-
-## Examples
-{{SKILL_EXAMPLES}}
-"""
-
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SkillFile:
-    """Represents a file within a skill."""
-    name: str  # Filename relative to skill directory (e.g., "SKILL.md")
-    subject: str = ""  # Subject/category this file addresses
-    level: float = 0.0  # Complexity/deepness (0.0 - 1.0)
+    """A file declared in a skill's metadata."""
+    parent: Skill            # Parent skill
+    name: str               # Filename relative to the skill directory
+    subject: str = ""       # Logical subject/category (filled by bookkeeper)
+    level: float = 0.0      # Specialisation depth, 0.0–1.0 (filled by bookkeeper)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "name": self.name,
-            "subject": self.subject,
-            "level": self.level
-        }
+        return {"name": self.name, "subject": self.subject, "level": self.level}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SkillFile":
+    def from_dict(cls, parent_skill:Skill, data: Dict[str, Any]) -> "SkillFile":
         return cls(
-            name=data.get("name", ""),
-            subject=data.get("subject", ""),
-            level=float(data.get("level", 0.0))
+            parent  = parent_skill,
+            name    = str(data.get("name", "")),
+            subject = str(data.get("subject", "")),
+            level   = float(data.get("level", 0.0)),
         )
 
+    def content(self) -> str | None:
+        return self.parent.content(self.name)
+
+    def content_guaranteed(self) -> str:
+        content = self.parent.content(self.name)
+        if content is None:
+            raise FileNotFoundError("Skill could not be loaded")
+
+        return content
+
+class SecurityViolation(Exception):
+    def __init__(self,
+                 bad_path:str   | None = None,
+                 offender:Skill | None = None):
+
+        path = bad_path if bad_path else "N/A"
+        offender_name = offender.name if offender else "N/A"
+
+        self.offender = offender
+        self.bad_path = bad_path
+        self.message = f"Skill {offender_name} attempted potential directory traversal (Path: {path})."
 
 @dataclass
 class Skill:
-    """Represents a single skill with its metadata and content."""
+    """
+    A single skill: its directory, metadata, and content.
 
-    name: str  # Skill identifier (folder name)
-    path: Path  # Path to skill directory
+    Variable substitution uses {{VARIABLE_NAME}} syntax; values are drawn
+    from the ``variables`` mapping in skill.meta.json.
+    SKILL.md is always treated as the primary descriptor and is loaded
+    regardless of whether it appears in the files list.
+    """
 
-    # Metadata fields
-    keywords: List[str] = field(default_factory=list)
-    files: List[SkillFile] = field(default_factory=list)
-    variables: Dict[str, Any] = field(default_factory=dict)
+    name: str   # Folder name / skill identifier
+    path: Path  # Absolute path to the skill directory
 
-    # Computed/loaded fields
-    _raw_content_cache: Dict[str, str] = field(default_factory=dict, repr=False)
-    _substituted_content_cache: Dict[str, str] = field(default_factory=dict, repr=False)
+    # Metadata (populated from skill.meta.json on construction)
+    keywords:  List[str]           = field(default_factory=list)
+    files:     List[SkillFile]     = field(default_factory=list)
+    variables: Dict[str, Any]      = field(default_factory=dict)
 
-    def __post_init__(self):
-        """Load metadata from skill.meta.json if exists."""
-        meta_path = self.path / "skill.meta.json"
+    # Internal read caches (not part of the public interface)
+    _raw_cache: Dict[str, str]  = field(default_factory=dict, repr=False)
+    _sub_cache: Dict[str, str]  = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        self.path = self.path.resolve()
+        meta_path = self.path / META_ENTRY
         if meta_path.exists():
-            try:
-                data = json.loads(meta_path.read_text())
+            self._load_meta(meta_path)
 
-                if "keywords" in data:
-                    self.keywords = data["keywords"]
+    # ------------------------------------------------------------------
+    # Meta loading / saving
+    # ------------------------------------------------------------------
 
-                if "files" in data:
-                    # Validate files are within skill directory (prevent traversal)
-                    for file_data in data.get("files", []):
-                        file_name = file_data.get("name", "")
-                        # Security check: reject any path with .. or absolute paths
-                        if ".." not in file_name and not Path(file_name).is_absolute():
-                            self.files.append(SkillFile.from_dict(file_data))
+    def _load_meta(self, meta_path: Path) -> None:
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"Warning: could not parse meta for skill '{self.name}': {e}")
+            return
 
-                if "variables" in data:
-                    self.variables.update(data["variables"])
+        self.keywords = list(data.get("keywords", []))
+        self.variables = dict(data.get("variables", {}))
 
-            except (json.JSONDecodeError, Exception) as e:
-                print(f"Warning: Error loading meta for skill '{self.name}': {e}")
+        for entry in data.get("files", []):
+            file_name = entry.get("name", "")
+            # Security: reject absolute paths and directory traversal
+            if not file_name or Path(file_name).is_absolute() or ".." in Path(file_name).parts:
+                print(f"Warning: skipping unsafe file entry '{file_name}' in skill '{self.name}'")
+                raise SecurityViolation(str(file_name), self)
+                # continue
+            # Confirm the resolved path is still inside the skill directory
+            resolved = (self.path / file_name).resolve()
+            if not str(resolved).startswith(str(self.path)):
+                print(f"Warning: file '{file_name}' escapes skill directory — skipped")
+                raise SecurityViolation(str(file_name), self)
+                # continue
+            self.files.append(SkillFile.from_dict(self, entry))
 
-    @property
-    def files_path(self) -> Path:
-        """Path to the skill.meta.json file."""
-        return self.path / "skill.meta.json"
+    def save_meta(self) -> None:
+        """Persist current metadata back to skill.meta.json."""
+        data = {
+            "keywords":  self.keywords,
+            "files":     [f.to_dict() for f in self.files],
+            "variables": self.variables,
+        }
+        (self.path / META_ENTRY).write_text(
+            json.dumps(data, indent=2), encoding="utf-8"
+        )
+
+    # ------------------------------------------------------------------
+    # Validity
+    # ------------------------------------------------------------------
 
     @property
     def is_valid(self) -> bool:
-        """Check if skill has required SKILL.md and valid metadata."""
-        return (self.path / "SKILL.md").exists() or any(f.name == "SKILL.md" for f in self.files)
+        """True when the primary SKILL.md descriptor exists on disk."""
+        return (self.path / SKILL_ENTRY).exists()
 
-    def get_raw_content(self, file_name: str = "SKILL.md") -> Optional[str]:
+    # ------------------------------------------------------------------
+    # Content access
+    # ------------------------------------------------------------------
+
+    def _safe_read(self, file_name: str) -> Optional[str]:
         """
-        Get raw content of a skill file without variable substitution.
-
-        Args:
-            file_name: Filename relative to skill directory
-
-        Returns:
-            Raw file content or None if not found
+        Read a file relative to the skill directory with traversal guard.
+        Returns raw text or None on any failure.
         """
-        # Check cache first
-        if file_name in self._raw_content_cache:
-            return self._raw_content_cache[file_name]
+        if not file_name or Path(file_name).is_absolute() or ".." in Path(file_name).parts:
+            raise SecurityViolation(str(file_name), self)
 
-        file_path = self.path / file_name
-
-        # Security: ensure path is within skill directory
+        target = (self.path / file_name).resolve()
+        if not str(target).startswith(str(self.path)):
+            print(f"Security: '{file_name}' would escape skill directory")
+            raise SecurityViolation(str(target), self)
+            # return None
         try:
-            resolved = file_path.resolve()
-            skill_root = self.path.resolve()
-
-            # Check if resolved path starts with skill root (prevents .. traversal)
-            if not str(resolved).startswith(str(skill_root)):
-                print(f"Security warning: File '{file_name}' would escape skill directory")
-                return None
-
-            content = file_path.read_text(encoding="utf-8")
-
+            return target.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         except Exception as e:
-            print(f"Error reading file {file_name}: {e}")
+            print(f"Error reading '{file_name}' in skill '{self.name}': {e}")
             return None
 
-        # Cache the result
-        self._raw_content_cache[file_name] = content or ""
-        return self._raw_content_cache.get(file_name)
+    def raw(self, file_name: str = SKILL_ENTRY) -> Optional[str]:
+        """Return raw (unsubstituted) content of a skill file."""
+        if file_name not in self._raw_cache:
+            text = self._safe_read(file_name)
+            if text is None:
+                return None
+            self._raw_cache[file_name] = text
+        return self._raw_cache[file_name]
 
-    def get_substituted_content(self, file_name: str = "SKILL.md") -> Optional[str]:
+    def content(self, file_name: str = SKILL_ENTRY) -> Optional[str]:
         """
-        Get skill content with variables substituted.
-
-        Replaces {{VARIABLE_NAME}} with values from skill.variables
-
-        Args:
-            file_name: Filename relative to skill directory
-
-        Returns:
-            Content with variables substituted, or None if not found
+        Return content of a skill file with {{VARIABLE_NAME}} substitution
+        applied using the skill's variables mapping.
         """
-        # Check cache first
-        if file_name in self._substituted_content_cache:
-            return self._substituted_content_cache[file_name]
+        if file_name not in self._sub_cache:
+            text = self.raw(file_name)
+            if text is None:
+                return None
+            self._sub_cache[file_name] = VAR_PATTERN.sub(
+                lambda m: str(self.variables.get(m.group(1), m.group(0))),
+                text,
+            )
+        return self._sub_cache[file_name]
 
-        raw = self.get_raw_content(file_name)
-        if raw is None:
-            return None
+    def invalidate_cache(self, file_name: Optional[str] = None) -> None:
+        """Clear cached content. Pass a filename to clear just one entry."""
+        if file_name:
+            self._raw_cache.pop(file_name, None)
+            self._sub_cache.pop(file_name, None)
+        else:
+            self._raw_cache.clear()
+            self._sub_cache.clear()
 
-        content = self._substitute_variables(raw)
-        self._substituted_content_cache[file_name] = content
-        return content
+    # ------------------------------------------------------------------
+    # Convenience
+    # ------------------------------------------------------------------
 
-    def _substitute_variables(self, text: str) -> str:
-        """Replace {{VARIABLE_NAME}} patterns with values from variables dict."""
+    def extra_files(self) -> List[SkillFile]:
+        """Return declared files that are not SKILL.md."""
+        return [f for f in self.files if f.name != SKILL_ENTRY]
 
-        # Find all variable references
-        pattern = r'\{\{(\w+)\}\}'
+    def __repr__(self) -> str:
+        return f"Skill(name={self.name!r}, valid={self.is_valid}, keywords={self.keywords})"
 
-        def replace_var(match):
-            var_name = match.group(1)
-            return str(self.variables.get(var_name, f"{{{{{var_name}}}}}"))  # Keep original if not found
 
-        return re.sub(pattern, replace_var, text)
-
-    @property
-    def content(self) -> Optional[str]:
-        """Shorthand for getting substituted SKILL.md content."""
-        return self.get_substituted_content("SKILL.md")
-
-    def save_metadata(self) -> None:
-        """Save current metadata back to skill.meta.json"""
-        data = {
-            "keywords": self.keywords,
-            "files": [f.to_dict() for f in self.files],
-            "variables": self.variables
-        }
-
-        meta_path = self.path / "skill.meta.json"
-        with open(meta_path, 'w') as f:
-            json.dump(data, f, indent=2)
-
+# ---------------------------------------------------------------------------
+# Library
+# ---------------------------------------------------------------------------
 
 class Library:
-    """Skill library - discovers and manages all skills."""
+    """
+    Discovers and manages the skill library rooted at ``skills_dir``.
 
-    def __init__(self, skills_dir: str | Path = "./skills"):
+    A valid skill directory must contain at least one of SKILL.md or
+    skill.meta.json at its top level.
+    """
+
+    def __init__(self, skills_dir: str | Path = "./skills") -> None:
         self.skills_dir = Path(skills_dir).resolve()
-        self._skills_cache: Dict[str, Skill] = {}
+        self._cache: Dict[str, Skill] = {}
+        self._discovered = False
+
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
 
     @property
-    def is_valid(self) -> bool:
-        """Check if skills directory exists."""
-        return self.skills_dir.exists() and self.skills_dir.is_dir()
+    def exists(self) -> bool:
+        return self.skills_dir.is_dir()
 
     def discover(self) -> "Library":
-        """
-        Discover all skill directories in the library.
+        """Scan the skills directory and populate the internal cache."""
+        self._cache.clear()
+        self._discovered = True
 
-        Looks for subdirectories containing either SKILL.md or skill.meta.json
-
-        Returns:
-            Self (for chaining)
-        """
-        self._skills_cache.clear()
-
-        if not self.is_valid:
+        if not self.exists:
             print(f"Skills directory not found: {self.skills_dir}")
             return self
 
-        # Find all subdirectories
         for item in sorted(self.skills_dir.iterdir()):
-            if item.is_dir():
-                # Check if it looks like a skill (has SKILL.md or meta)
-                has_skill_md = (item / "SKILL.md").exists()
-                has_meta = (item / "skill.meta.json").exists()
-
-                if has_skill_md or has_meta:
-                    skill_name = item.name
-                    self._skills_cache[skill_name] = Skill(
-                        name=skill_name,
-                        path=item
-                    )
+            if not item.is_dir():
+                continue
+            if (item / SKILL_ENTRY).exists() or (item / META_ENTRY).exists():
+                skill = Skill(name=item.name, path=item)
+                self._cache[item.name] = skill
 
         return self
 
-    def get(self, name: str) -> Optional[Skill]:
-        """Get a skill by name."""
-        if not self._skills_cache:
+    def _ensure_discovered(self) -> None:
+        if not self._discovered:
             self.discover()
-        return self._skills_cache.get(name)
+
+    # ------------------------------------------------------------------
+    # Access
+    # ------------------------------------------------------------------
+
+    def get(self, name: str) -> Optional[Skill]:
+        """Return a skill by its folder name, or None."""
+        self._ensure_discovered()
+        return self._cache.get(name)
 
     def all(self) -> List[Skill]:
-        """Get all discovered skills as a list."""
-        if not self._skills_cache:
-            self.discover()
-        return list(self._skills_cache.values())
+        """Return all discovered skills."""
+        self._ensure_discovered()
+        return list(self._cache.values())
 
-    def search_keywords(self, keywords: List[str]) -> List[Skill]:
-        """Search for skills matching any of the given keywords."""
-        results = []
+    def valid(self) -> List[Skill]:
+        """Return only skills that have a SKILL.md on disk."""
+        return [s for s in self.all() if s.is_valid]
 
-        for skill in self.all():
-            for kw in keywords:
-                if any([kw.lower() == k.lower() for k in skill.keywords]):
-                    results.append(skill)
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
 
-        return results
+    def search(self, *keywords: str) -> List[Skill]:
+        """
+        Return skills whose keyword list contains any of the given keywords
+        (case-insensitive).
+        """
+        lower = [k.lower() for k in keywords]
+        return [
+            s for s in self.all()
+            if any(k in lower for k in (kw.lower() for kw in s.keywords))
+        ]
 
-    def add_skill(self, name: str, content: str = "") -> Skill:
-        """Create a new skill directory with basic files."""
+    # ------------------------------------------------------------------
+    # Scaffolding
+    # ------------------------------------------------------------------
+
+    def scaffold(self, name: str, skill_md: str = "") -> Skill:
+        """
+        Create a new skill directory with a SKILL.md and default
+        skill.meta.json.  If the directory already exists it is left
+        intact; only missing files are created.
+
+        Args:
+            name:     Folder name for the new skill.
+            skill_md: Initial content for SKILL.md.  If empty a minimal
+                      placeholder is written instead.
+
+        Returns:
+            A freshly loaded Skill instance.
+        """
         skill_path = self.skills_dir / name
-
-        # Create directory if needed
         skill_path.mkdir(parents=True, exist_ok=True)
 
-        # Create empty SKILL.md if it doesn't exist
-        skill_md = skill_path / "SKILL.md"
-        if not skill_md.exists() and content:
-            skill_md.write_text(content, encoding="utf-8")
+        # Write SKILL.md if absent
+        md_path = skill_path / SKILL_ENTRY
+        if not md_path.exists():
+            md_path.write_text(
+                skill_md or f"# {name}\n\n> Add skill description here.\n",
+                encoding="utf-8",
+            )
 
-        # Return new Skill object (will load/create meta in __post_init__)
-        return Skill(name=name, path=skill_path)
+        # Write skill.meta.json if absent
+        meta_path = skill_path / META_ENTRY
+        if not meta_path.exists():
+            default_meta: Dict[str, Any] = {
+                "keywords": [],
+                "files": [
+                    {"name": SKILL_ENTRY, "subject": "main", "level": 0.0}
+                ],
+                "variables": {},
+            }
+            meta_path.write_text(json.dumps(default_meta, indent=2), encoding="utf-8")
 
+        skill = Skill(name=name, path=skill_path)
+        self._cache[name] = skill
+        self._discovered = True
+        return skill
 
-def create_skill_template(
-        name: str,
-        description: str = "",
-        tags: List[str] = None,
-        overview: str = "",
-        capabilities: str = "",
-        guidelines: str = "",
-        examples: str = ""
-) -> str:
-    """
-    Create a skill template with variables.
-
-    Args:
-        name: Skill name/title
-        description: Brief description
-        tags: List of tags/keywords
-        overview: Overview section content
-        capabilities: Capabilities section content
-        guidelines: Guidelines section content
-        examples: Examples section content
-
-    Returns:
-        Template string with {{VARIABLE}} placeholders filled in
-    """
-    tags_str = ", ".join(tags) if tags else ""
-
-    return SKILL_TEMPLATE.replace("{{SKILL_NAME}}", name).replace(
-        "{{SKILL_DESCRIPTION}}", description
-    ).replace("{{SKILL_TAGS}}", tags_str).replace(
-        "{{SKILL_OVERVIEW}}", overview or "[Add overview here]"
-    ).replace("{{SKILL_CAPABILITIES}}", capabilities or "[List capabilities]").replace(
-        "{{SKILL_GUIDELINES}}", guidelines or "[Add guidelines]"
-    ).replace("{{SKILL_EXAMPLES}}", examples or "[Add examples]")
-
-
-def create_skill_directory(
-        library: Library,
-        name: str,
-        template_content: Optional[str] = None
-) -> Skill:
-    """
-    Create a new skill with SKILL.md and default metadata.
-
-    Args:
-        library: Library instance to add skill to
-        name: Skill identifier (folder name)
-        template_content: Custom content or uses create_skill_template
-
-    Returns:
-        The created Skill object
-    """
-    # Create the skill directory
-    skill = library.add_skill(name, template_content or "")
-
-    # If no content provided, generate a basic template
-    if not (skill.path / "SKILL.md").exists():
-        content = create_skill_template(
-            name=name,
-            description="A new skill",
-            tags=["placeholder"],
-            overview="Skill overview goes here.",
-            capabilities="- Capability one\n- Capability two"
-        )
-        (skill.path / "SKILL.md").write_text(content, encoding="utf-8")
-
-    # Create default metadata if doesn't exist
-    meta_path = skill.path / "skill.meta.json"
-    if not meta_path.exists():
-        meta_data = {
-            "keywords": [],  # Will be populated by bookkeeper later
-            "files": [
-                {
-                    "name": "SKILL.md",
-                    "subject": "main",
-                    "level": 0.1
-                }
-            ],
-            "variables": {}
-        }
-        with open(meta_path, 'w') as f:
-            json.dump(meta_data, f, indent=2)
-
-    # Reload skill to pick up new metadata
-    return Skill(name=name, path=skill.path)
-
-
-if __name__ == "__main__":
-    import pprint
-
-    # Demo usage
-    lib = Library("./skills")
-
-    # Create a test skill if directory doesn't exist
-    test_dir = Path("./skills/test-skill")
-    if not test_dir.exists():
-        create_skill_directory(lib, "test-skill", template_content=None)
-
-    # Discover skills
-    lib.discover()
-    print(f"Found {len(lib.all())} skill(s)")
-
-    # Get the test skill
-    test = lib.get("test-skill")
-    if test:
-        print("\nTest skill content:")
-        print(test.content[:500] + "...")
+    def __repr__(self) -> str:
+        status = f"{len(self._cache)} skills" if self._discovered else "not yet discovered"
+        return f"Library(skills_dir={str(self.skills_dir)!r}, {status})"
