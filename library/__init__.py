@@ -6,20 +6,17 @@ Skills are stored in ./skills/[skill-name]/ directory:
     - skill.meta.json  (metadata with variables, files list)
 
 Usage:
-    from library import Library, create_skill_template
-
+    from library import Library
     lib = Library()
-    skills = lib.discover()
-
-    frontend = skills.get("frontend-design")
-    print(frontend.content)  # Variable-substituted content
+    frontend = lib.get("frontend-design")
+    print(frontend.content())  # Variable-substituted content
 """
-
-from .skill import Skill, Library, create_skill_template, SKILL_TEMPLATE
+from .skill import Skill, SkillFile, Library, SKILL_ENTRY, META_ENTRY
 
 __all__ = [
     "Skill",
+    "SkillFile",
     "Library",
-    "create_skill_template",
-    "SKILL_TEMPLATE"
+    "SKILL_ENTRY",
+    "META_ENTRY",
 ]
