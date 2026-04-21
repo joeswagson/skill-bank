@@ -1,7 +1,7 @@
 """
 Base LLM Provider abstract class and common types.
 """
-
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass
@@ -54,6 +54,19 @@ class LLMProvider(ABC):
     def name(self) -> str:
         """Return the provider name."""
         return self.__class__.__name__
+
+    async def send_message(self,
+                           message: ChatMessage,
+                           model: Optional[str] = None,
+                           temperature: float = 1.0,
+                           max_tokens: Optional[int] = None,
+                           **kwargs: Any) -> ChatResponse:
+        return await self.chat(
+            messages=[message],
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs)
 
     @abstractmethod
     async def chat(self,
