@@ -91,6 +91,13 @@ class Skill:
         if meta_path.exists():
             self._load_meta(meta_path)
 
+    def tool_repr(self):
+        return {
+            "name": self.name,
+            "keywords": self.keywords,
+            "extra_skills": [file.to_dict() for file in self.files]
+        }
+
     # ------------------------------------------------------------------
     # Meta loading / saving
     # ------------------------------------------------------------------
@@ -207,7 +214,7 @@ class Skill:
         return [f for f in self.files if f.name != SKILL_ENTRY]
 
     def __repr__(self) -> str:
-        return f"Skill(name={self.name!r}, valid={self.is_valid}, keywords={self.keywords})"
+        return f"Skill(name={self.name!r}, sub_skills={len(self.files)}, keywords={self.keywords})"
 
 
 # ---------------------------------------------------------------------------
