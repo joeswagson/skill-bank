@@ -1,115 +1,163 @@
-"""
-Bookkeeper module - LLM-based skill metadata generation.
+import json
+import config
+import asyncio
+from typing import Tuple, cast
+from library import Skill, SkillFile
+from providers import ChatMessage, ChatResponse
+from .convention import (
+    BEGIN_BLOCK, CLOSE_BLOCK,
+    IDENTITY_PREFIX,
+    KEYWORD_PROMPT, SUBJECT_PROMPT, LEVEL_PROMPT, SUBJECT_LEVEL_PROMPT,
+)
 
-Generates:
-- keywords: Relevant tags/keywords from skill content
-- subject: What type of problem/task this file addresses
-- level: Complexity score (0.0-1.0) for reasoning depth required
-"""
-
-from typing import List, Optional
-
-IDENTITY_PREFIX = """
-You are a "bookkeeper" assistant, analyzing skills to be dynamically loaded by a Large Language Model via tool calling.
-You are NOT being interpreted by a human. Your responses must contain a parseable format.
-You may respond with reasoning, if it will improve the quality of your analysis.
-
-Your output format must STRICTLY adhere to this format (the usage of # indicates a comment, do not include comments in your response, they are to deepen your understanding of the response schema)
-
-An underscore will represent an ambiguous field. "A _ ball" means it is at your discretion to fill in the "blanks."
-An additional way of denoting ambiguous fields is {descriptor}, which is similar to an underscore, but with more specificity as to what should be filled in. An example fitting to the last one would be "A {color} ball." This would imply that you should only fill in colors.
-Note that the formats usage of [_] signify control blocks for indicating what the parser should do. These are direct, must match capitalization.
-
-This is the format:
-[start]
-{ # Every response between the processing blocks [start] and [end] will be treated as a SINGLE python DICTIONARY, not a list, or anything else. The response will be parsed from json into a python object. `null` will be automatically handled, do not pass `None`.
-"{}"
-}
-[end]
-"""
+TEMPERATURE = 0
 
 class BookkeeperError(Exception):
-    pass
+    def __init__(self, message: str) -> None:
+        self.message = message
 
-KEYWORD_PROMPT = """
-Evaluate 
-"""
-def generate_keywords(content: str) -> List[str]:
-    """
-    Generate relevant keywords from skill content using LLM.
+    @staticmethod
+    def missing_begin():
+        return BookkeeperError("Bookkeeper did not respond with a begin block.")
 
-    Args:
-        content: The SKILL.md or file content
+    @staticmethod
+    def missing_close():
+        return BookkeeperError("Bookkeeper did not respond with a close block.")
 
-    Returns:
-        List of keyword strings
+    @staticmethod
+    def invalid_parse():
+        return BookkeeperError("Bookkeeper did not respond with valid json.")
 
-    TODO: Implement with actual provider call
-    """
-    raise NotImplementedError("Bookkeeper not yet implemented")
+    @staticmethod
+    def invalid_format():
+        return BookkeeperError("Bookkeeper responded with unexpected data.")
 
+    @staticmethod
+    def bookkeeper_missing():
+        return BookkeeperError("Bookkeeper was not able to generate a response.")
 
-def analyze_subject(file_content: str, context_files: Optional[List[str]] = None) -> str:
-    """
-    Analyze and determine the subject/category this file addresses.
+def _build_identity() -> str:
+    return (IDENTITY_PREFIX.strip()
+            .replace("[start]", BEGIN_BLOCK)
+            .replace("[end]", CLOSE_BLOCK))
 
-    Args:
-        file_content: Content of the specific file to analyze
-        context_files: List of other skill files for context (optional)
-
-    Returns:
-        Subject string describing what type of problem/task this addresses
-
-    TODO: Implement with actual provider call
-    """
-    raise NotImplementedError("Bookkeeper not yet implemented")
-
-
-def calculate_level(content: str, complexity_factors: Optional[List[str]] = None) -> float:
-    """
-    Calculate skill level (0.0-1.0) based on content analysis.
-
-    Factors that increase level:
-    - Detailed/verbose instructions with little room for creativity
-    - Complex reasoning required
-    - Many edge cases to handle
-    - Specialized domain knowledge needed
-
-    Args:
-        content: Skill file content to analyze
-        complexity_factors: Optional list of factors to consider
-
-    Returns:
-        Level value between 0.0 and 1.0
-
-    TODO: Implement with actual provider call
-    """
-    raise NotImplementedError("Bookkeeper not yet implemented")
+def _render(template: str,
+            name: str,
+            filename: str,
+            content: str,
+            level: float | None = None,
+            subject: str | None = None) -> Tuple[str, str]:
+    rendered = (template.strip()
+                .replace("{{SKILL_NAME}}", name)
+                .replace("{{SKILL_FILENAME}}", filename)
+                .replace("{{SKILL_LEVEL}}", str(level) if level is not None else "N/A.")
+                .replace("{{SKILL_SUBJECT}}", subject if subject else "N/A.")
+                .replace("{{SKILL_CONTENT}}", content))
+    return _build_identity(), rendered
 
 
-def update_skill_metadata(
-        skill_path: str,
-        file_name: str = "SKILL.md"
-) -> dict:
-    """
-    Update a skill's metadata by analyzing its content.
-
-    Args:
-        skill_path: Path to the skill directory
-        file_name: Specific file to analyze (default: SKILL.md)
-
-    Returns:
-        Updated metadata dictionary
-
-    TODO: Implement with actual provider calls
-    """
-    raise NotImplementedError("Bookkeeper not yet implemented")
+def _render_for_file(template: str, skill_file: SkillFile) -> Tuple[str, str]:
+    return _render(
+        template,
+        skill_file.parent.name,
+        skill_file.name,
+        skill_file.content_guaranteed(),
+        skill_file.level,
+        skill_file.subject,
+    )
 
 
-# Placeholder for when implementation is ready
+def _call(identity: str, message: str) -> dict[str, object]:
+    provider = config.load_primary_provider()
+    response = asyncio.run(provider.chat(
+        [ChatMessage('system', identity), ChatMessage('user', message)],
+        temperature=TEMPERATURE,
+    ))
+    return process_response(response)
+
+
+def _call_skill(template: str, skill: Skill) -> dict[str, object]:
+    combined = '\n\n'.join(
+        f'Skill File "{f.name}":\n{f.content_guaranteed()}' for f in skill.files
+    )
+    identity, message = _render(template, skill.name, "None", combined)
+    return _call(identity, message)
+
+
+def _call_file(template: str, skill_file: SkillFile) -> dict[str, object]:
+    identity, message = _render_for_file(template, skill_file)
+    return _call(identity, message)
+
+def process_response(response: ChatResponse) -> dict[str, object]:
+    content = response.content
+
+    if BEGIN_BLOCK not in content:
+        raise BookkeeperError.missing_begin()
+    if CLOSE_BLOCK not in content:
+        raise BookkeeperError.missing_close()
+
+    begin_parts = content.split(BEGIN_BLOCK)
+    if len(begin_parts) > 2:
+        raise BookkeeperError.invalid_format()
+
+    close_parts = begin_parts[1].split(CLOSE_BLOCK)
+    if len(close_parts) > 2:
+        raise BookkeeperError.invalid_format()
+
+    try:
+        return json.loads(close_parts[0])
+    except Exception:
+        raise BookkeeperError.invalid_parse()
+
+
+def _expect(parsed: dict, key: str, typ: type) -> object:
+    """Assert a single-key response with the expected key and type."""
+    if len(parsed) != 1 or key not in parsed:
+        print(parsed)
+        raise BookkeeperError.invalid_format()
+    if not isinstance(parsed[key], typ):
+        print(parsed)
+        raise BookkeeperError.invalid_format()
+    return parsed[key]
+
+
+def generate_keywords(skill: Skill) -> list[str]:
+    parsed = _call_skill(KEYWORD_PROMPT, skill)
+    return cast(list[str], _expect(parsed, "keywords", list))
+
+
+def analyze_subject(skill_file: SkillFile) -> str:
+    parsed = _call_file(SUBJECT_PROMPT, skill_file)
+    return cast(str, _expect(parsed, "subject", str))
+
+
+def calculate_level(skill_file: SkillFile) -> float:
+    parsed = _call_file(LEVEL_PROMPT, skill_file)
+    return cast(float, _expect(parsed, "level", float))
+
+
+def analyze_subject_and_level(skill_file: SkillFile) -> tuple[str, float]:
+    parsed = _call_file(SUBJECT_LEVEL_PROMPT, skill_file)
+
+    if len(parsed) != 2 or "subject" not in parsed or "level" not in parsed:
+        print(parsed)
+        raise BookkeeperError.invalid_format()
+    if not isinstance(parsed["subject"], str) or not isinstance(parsed["level"], float):
+        print(parsed)
+        raise BookkeeperError.invalid_format()
+
+    return cast(str, parsed["subject"]), cast(float, parsed["level"])
+
+
+def update_skill_metadata(skill: Skill) -> None:
+    skill.keywords = generate_keywords(skill)
+    for f in skill.files:
+        f.subject, f.level = analyze_subject_and_level(f)
+
+
 __all__ = [
     "generate_keywords",
     "analyze_subject",
     "calculate_level",
-    "update_skill_metadata"
+    "update_skill_metadata",
 ]
