@@ -1,7 +1,11 @@
 {
   "keywords": [],
   "files": [
-    "SKILL.md"
+    {
+      "name": "SKILL.md",
+      "subject": "main",
+      "level": 0
+    }
   ],
 
   "variables": {
